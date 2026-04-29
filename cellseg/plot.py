@@ -132,3 +132,20 @@ def single_image_viewer(path, round_, plate, well):
     sig_plot = cellseg.plot.show_two_ims(im_sig, signal_areas, color_mapper=[bokeh.palettes.gray(256), bokeh.palettes.gray(256)])
     
     return(bf_plot, sig_plot)
+
+
+def single_experiment_viewer(im_sig, im_bf):
+    im_sig = skimage.img_as_float(skimage.io.imread(im_sig)[:,:,0])
+    im_bf = skimage.img_as_float(skimage.io.imread(im_bf))
+    cellseg.quant.signal_segmentation(im_sig)
+    cellseg.quant.brightfield_segmentation(im_bf, gauss_sigma = 30, truncate = 0.35,
+                                           dark_thresh = 10000, light_thresh = 3000,
+                                           disk_radius = 2)
+    print('Segmentation Completed')
+    
+    brightfield_areas, total_area = cellseg.brightfield_segmentation(im_bf)
+    signal_areas, signal_total_area = cellseg.signal_segmentation(im_sig)
+    bf_plot = cellseg.plot.show_two_ims(im_bf, brightfield_areas, color_mapper=[bokeh.palettes.gray(256), bokeh.palettes.gray(256)])
+    sig_plot = cellseg.plot.show_two_ims(im_sig, signal_areas, color_mapper=[bokeh.palettes.gray(256), bokeh.palettes.gray(256)])
+
+    return(bf_plot, sig_plot)
