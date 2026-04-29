@@ -18,16 +18,17 @@ The directory structure of the project is as follows:
 
 ```
 data/
-├── config.csv
-│   └── Figure
-│   └── Seeding Desntiy
-│   └── Virus
-│   └── Cargo
-│   └── Dose
-│   └── Image Time
-│   └── Receptor
-│   └── Include
+├── metadata.csv
 ├── images/
+│   ├── 1_bf.tif
+│   ├── 1_r.tif
+│   ├── 2_0.tif
+│   └── ...
+
+## metadata.csv
+figure_name,figure_id,channel,seeding_density,virus,cargo,dose_vg/well,image_time_h,receptor,include
+1_bf.tif,1,brightfield,0.5e5,AAV9,EGFP,0.5e10,24,EGFRvIII,1
+1_r.tif,1,brightfield,0.5e5,AAV9,EGFP,0.5e10,24,EGFRvIII,1
 ```
 
 ## Notebooks
