@@ -76,3 +76,4 @@ def load_or_generate_metadata(data_dir='./sample', verbose=True):
         print(f"✓ Generated and saved metadata to: {metadata_file}")
     
     return df_metadata
+
