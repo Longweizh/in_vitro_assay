@@ -3,19 +3,36 @@ import pandas as pd
 import glob
 
 
+METADATA_COLUMNS = [
+    'figure_name',
+    'figure_id',
+    'experiment_id',
+    'magnification',
+    'channel',
+    'seeding_density',
+    'virus',
+    'cargo',
+    'dose_vg/well',
+    'image_time_h',
+    'receptor',
+    'include',
+    'notes',
+]
+
+
 def scan_images(images_dir):
-    tiff_files = []
-    if os.path.exists(images_dir):
-        tiff_files = sorted(glob.glob(os.path.join(images_dir, '*.tif*')))
-        tiff_files = [os.path.basename(f) for f in tiff_files]
-    return tiff_files
+    if not os.path.isdir(images_dir):
+        return []
+
+    tiff_files = sorted(glob.glob(os.path.join(images_dir, '*.tif*')))
+    return [os.path.basename(f) for f in tiff_files]
 
 
 
 def generate_metadata(tiff_files, default_magnification='4x', 
                                   default_seeding_density=0.5e5):
     if not tiff_files:
-        return print("No TIFF files found. Please check the images directory.")
+        return pd.DataFrame(columns=METADATA_COLUMNS)
     
     df_metadata = pd.DataFrame({
         'figure_name': tiff_files,
@@ -36,12 +53,14 @@ def generate_metadata(tiff_files, default_magnification='4x',
     return df_metadata
 
 
-def load_or_generate_metadata(data_dir='./sample', verbose=True):
+def metadata(data_dir, verbose=True):
     if not os.path.exists(data_dir):
         raise FileNotFoundError(f"Data directory not found: {data_dir}")
     
     metadata_file = os.path.join(data_dir, 'metadata.csv')
     images_dir = os.path.join(data_dir, 'images')
+    if not os.path.isdir(images_dir):
+        images_dir = data_dir
     
     if verbose:
         print(f"Looking for metadata file at: {metadata_file}")
@@ -67,6 +86,11 @@ def load_or_generate_metadata(data_dir='./sample', verbose=True):
     
     # Generate metadata from found files
     df_metadata = generate_metadata(tiff_files)
+    if df_metadata.empty:
+        raise FileNotFoundError(
+            f"No TIFF files found in {images_dir}. "
+            "Create metadata.csv manually or place TIFF files in the data directory."
+        )
     
     # Save generated metadata
     os.makedirs(data_dir, exist_ok=True)
@@ -76,4 +100,3 @@ def load_or_generate_metadata(data_dir='./sample', verbose=True):
         print(f"✓ Generated and saved metadata to: {metadata_file}")
     
     return df_metadata
-

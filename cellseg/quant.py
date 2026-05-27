@@ -22,6 +22,12 @@ from skimage.segmentation import watershed
 from scipy import ndimage as ndi
 import scipy.signal
 
+
+#################################################################################
+######### Threshold #############################################################
+#################################################################################
+
+
 def sig_thresh_finder(histogram, bins, desired_thresh = 1000):
     ''' 
     Searches through a list of second derivatives for the bin value at which the
@@ -116,6 +122,11 @@ def bf_thresh_finder(histogram, bins, desired_thresh = 10000, standard = True):
             index += 1
         
         return(np.min(thresh))
+
+
+#################################################################################
+######### Segementation #########################################################
+#################################################################################
 
 def brightness_counter(im_labeled, im_pos):
     '''
@@ -247,223 +258,363 @@ def signal_segmentation(im_sig, gauss_sigma = 100, sig_thresh = 1000, min_size =
     #bf_thresh = remove_large_objects(bf_thresh, max_size = 1000)
     
     # Remove small objects
-    sig_thresh = skimage.morphology.remove_small_objects(sig_thresh, min_size = 5)
+    sig_thresh = skimage.morphology.remove_small_objects(sig_thresh, min_size = min_size)
     
     #Determine the total area of cells
     total_area = sum(sum(sig_thresh))
     
     return(sig_thresh, total_area)
 
-def bf_quant(im_bf, im_sig, bf_gauss_sigma = 30, truncate = 0.35, dark_thresh = 10000, light_thresh = 3000, disk_radius = 2, sig_gauss_sigma = 100, sig_thresh = 1000, min_size = 5, h_max = 0.01, collected_percentiles = [5,95]):
-    brightfield_areas, total_area = brightfield_segmentation(im_bf, bf_gauss_sigma, truncate, dark_thresh, light_thresh, disk_radius)
-    signal_areas, signal_total_area = signal_segmentation(im_sig, sig_gauss_sigma, sig_thresh, min_size)
-    print(f"Signal area: {signal_total_area}")
-    
-    original_sig = signal_areas*im_sig
-    
-    total_brightness = np.sum(np.sum(original_sig))
-    
-    #Determine the local maxima, considering pixels above the originally obtained threshold
-    image_max = skimage.morphology.h_maxima(im_sig, h_max)
 
-    #Label the maxima
-    maxima = skimage.measure.label(image_max)
+#################################################################################
+######### Quantification ########################################################
+#################################################################################
 
-    #Using the labeled maxima, watershed the intensity in the original image
-    labels = watershed(signal_areas, maxima, mask = signal_areas)
 
-    im_labeled, n_labels = skimage.measure.label(labels, background=0, return_num=True)
-    
-    cell_list, cell_intensity_list = brightness_counter(im_labeled, im_sig)
 
-    
-    if len(cell_list) > 0:
-        
-        median = np.median(list(cell_intensity_list.values()))
-        nintyfifth = np.percentile(list(cell_intensity_list.values()), collected_percentiles[1])
-        fifth = np.percentile(list(cell_intensity_list.values()), collected_percentiles[0])
+def safe_divide(numerator, denominator):
+    """Return numerator / denominator, or NaN when the denominator is zero."""
+    if denominator == 0 or pd.isna(denominator):
+        return np.nan
+    return numerator / denominator
 
-        return(n_labels, cell_list, cell_intensity_list, total_area, signal_total_area, total_brightness, median, nintyfifth, fifth)
-    
-    else: 
-        return(n_labels, cell_list, cell_intensity_list, total_area, signal_total_area, total_brightness, [], [], [])
 
-def overlap_quant(im1, im2, min_red_area = 5000):
+def read_image_channel(image, channel=None):
     """
-    im1: red/reference signal
-    im2: green/query signal
+    Read an image path or normalize an existing image array.
 
-    Calculate how much im2 signal is inside im1 signal.
+    If channel is provided for a multi-channel image, that channel is selected.
+    If channel is None, the full image is returned. This is useful for BF images
+    that are already single-channel.
     """
+    if isinstance(image, (str, os.PathLike)):
+        image = skimage.io.imread(image)
 
-    signal_areas_1, signal_total_area_1 = signal_segmentation(im1)
-    signal_areas_2, signal_total_area_2 = signal_segmentation(im2)
+    image = skimage.img_as_float(image)
 
-    # If red or green cannot be segmented / no positive area
-    if signal_total_area_1 < min_red_area or signal_total_area_2 == 0:
-        return {
-            'Red Area': signal_total_area_1,
-            'Green Area': signal_total_area_2,
-            'Overlap Area': 0,
-            'Green in Red Fraction': np.nan,
-            'Green in Red Percent': np.nan,
-            'Green Brightness in Red': np.nan,
-            'Green Mean Brightness in Red': np.nan,
-        }
+    if channel is not None and image.ndim == 3:
+        image = image[:, :, channel]
 
-    overlap_mask = signal_areas_1 & signal_areas_2
-    overlap_area = np.sum(overlap_mask)
+    return image
 
-    green_in_red_fraction = overlap_area / signal_total_area_1
 
-    green_brightness_in_red = np.sum(im2[overlap_mask])
+def masked_intensity(im, mask):
+    """Sum image intensity inside a boolean mask."""
+    return float(np.sum(im[mask]))
 
-    green_mean_brightness_in_red = (
-        green_brightness_in_red / overlap_area
-        if overlap_area > 0 else np.nan
-    )
+
+def masked_mean_intensity(im, mask):
+    """Mean image intensity inside a boolean mask."""
+    area = int(np.sum(mask))
+    return safe_divide(masked_intensity(im, mask), area)
+
+
+def quantify_signal_mask(im_signal, signal_mask):
+    """Return area, mean intensity, and total masked intensity for one signal image."""
+    signal_area = int(np.sum(signal_mask))
+    signal_intensity_sum = masked_intensity(im_signal, signal_mask)
 
     return {
-        'Red Area': signal_total_area_1,
-        'Green Area': signal_total_area_2,
-        'Overlap Area': overlap_area,
-        'Green in Red Fraction': green_in_red_fraction,
-        'Green in Red Percent': green_in_red_fraction * 100,
-        'Green Brightness in Red': green_brightness_in_red,
-        'Green Mean Brightness in Red': green_mean_brightness_in_red,
+        'area': signal_area,
+        'intensity': safe_divide(signal_intensity_sum, signal_area),
+        'intensity_sum': signal_intensity_sum,
     }
-        
-def single_analysis(sig, bf,channel=0):
-    df = pd.DataFrame(columns=['Date',
-                           'Count',
-                           'Cells Quantified',
-                           'Brightness List',
-                           'Bright Field Area',
-                           'Signal Area',
-                           'Total Brightness',
-                           'Median Cell Brightness',
-                            '90% Confidence Interval'])
-    im_sig = skimage.img_as_float(skimage.io.imread(sig)[:,:,channel])
-    im_bf = skimage.img_as_float(skimage.io.imread(bf)[:,:])
-            
-
-    n_cells, cell_list, cell_intensity_list, bf_area, signal_area, total_brightness, median, nintyfifth, fifth  = bf_quant(im_bf, im_sig)
-
-    temp_df = pd.DataFrame.from_dict([{'Date' : datetime.datetime.now(),
-                        'Count' : int(n_cells),
-                        'Cells Quantified' : str(cell_list), 
-                        'Brightness List': str(cell_intensity_list), 
-                        'Bright Field Area': bf_area,
-                        'Signal Area': signal_area,
-                        'Total Brightness': total_brightness,
-                        'Median Cell Brightness': median, 
-                        '90% Confidence Interval': [fifth, nintyfifth],
-                        'Percent Positive': signal_area*100/bf_area,
-                        'Percent Positive Scaled': signal_area*100/bf_area*0.5,
-                        'Total Brightness per Signal Area': total_brightness/signal_area}])
-
-    # Write all the information into a tidy dataframe
-
-    df = pd.concat([df,temp_df],
-                       ignore_index=True)
-
-    return df
 
 
+def quantify_overlap(receptor_mask, signal_mask, signal_image):
+    """
+    Quantify overlap between a reference mask and a query mask.
 
-def assay_analysis(
-        df_metadata, 
-        image_directory, 
-        output_file='results.csv',
-        g_channel=1,
-        r_channel=0,
+    For the current RG assay, reference is usually R and query is usually G.
+    """
+    overlap_mask = receptor_mask & signal_mask
+
+    receptor_area = int(np.sum(receptor_mask))
+    signal_area = int(np.sum(signal_mask))
+    overlapping_area = int(np.sum(overlap_mask))
+    signal_intensity_all_sum = masked_intensity(signal_image, signal_mask)
+    signal_intensity_overlapping_sum = masked_intensity(signal_image, overlap_mask)
+    signal_intensity_all = safe_divide(signal_intensity_all_sum, signal_area)
+    signal_intensity_overlapping = safe_divide(
+        signal_intensity_overlapping_sum,
+        overlapping_area,
+    )
+    union_area = int(np.sum(receptor_mask | signal_mask))
+
+    return {
+        'receptor_area': receptor_area,
+        'signal_area': signal_area,
+        'overlapping_area': overlapping_area,
+        'signal_intensity_all': signal_intensity_all,
+        'signal_intensity_overlapping': signal_intensity_overlapping,
+        'signal_intensity_all_sum': signal_intensity_all_sum,
+        'signal_intensity_overlapping_sum': signal_intensity_overlapping_sum,
+        'signal_in_receptor_fraction': safe_divide(overlapping_area, receptor_area),
+        'receptor_in_signal_fraction': safe_divide(overlapping_area, signal_area),
+        'overlap_over_union_fraction': safe_divide(overlapping_area, union_area),
+        'signal_intensity_overlap_fraction': safe_divide(
+            signal_intensity_overlapping_sum,
+            signal_intensity_all_sum,
+        ),
+        'overlap_mask': overlap_mask,
+    }
+
+
+def quantify_cell_brightness_stats(
+        im_signal,
+        signal_mask,
+        h_max=0.01,
+        include_percentiles=False,
+        collected_percentiles=(5, 95),
         ):
+    """
+    Optional watershed-based cell/object brightness stats.
 
-    df_metadata = df_metadata[df_metadata['include'] == 1].copy()
-    
-    # Initialize results dataframe
-    df_results = pd.DataFrame(columns=['Date',
-                                       'Count',
-                                       'Cells Quantified',
-                                       'Brightness List',
-                                       'Bright Field Area',
-                                       'Signal Area',
-                                       'Total Brightness',
-                                       'Median Cell Brightness',
-                                       '90% Confidence Interval',
-                                       'Percent Positive',
-                                       'Percent Positive Scaled',
-                                       'Total Brightness per Signal Area',
-                                       'experiment_id'])
-    
-    experiment_ids = df_metadata['experiment_id'].unique()
-    
-    # Process each experiment
-    for exp_id in tqdm.tqdm(experiment_ids, desc="Processing experiments"):
-        
-        # Get rows for this experiment
+    This is off by default in the new RG overlap workflow because area and
+    overlap intensity do not require splitting the mask into cell-like objects.
+    """
+    image_max = skimage.morphology.h_maxima(im_signal, h_max)
+    maxima = skimage.measure.label(image_max)
+    labels = watershed(signal_mask, maxima, mask=signal_mask)
+    im_labeled, n_labels = skimage.measure.label(labels, background=0, return_num=True)
+
+    cell_list, cell_intensity_list = brightness_counter(im_labeled, im_signal)
+    intensities = list(cell_intensity_list.values())
+
+    result = {
+        'cell_count': int(n_labels),
+        'cells_quantified': cell_list,
+        'cell_brightness': cell_intensity_list,
+        'median_cell_brightness': np.median(intensities) if intensities else np.nan,
+    }
+
+    if include_percentiles and intensities:
+        low, high = collected_percentiles
+        result[f'cell_brightness_p{low}'] = np.percentile(intensities, low)
+        result[f'cell_brightness_p{high}'] = np.percentile(intensities, high)
+
+    return result
+
+
+def quantify_bf_rg_overlap(
+        im_bf,
+        im_r,
+        im_g,
+        bf_params=None,
+        r_signal_params=None,
+        g_signal_params=None,
+        min_r_area=0,
+        min_r_area_fraction=None,
+        min_r_intensity=None,
+        min_r_intensity_sum=None,
+        include_cell_stats=False,
+        include_percentiles=False,
+        collected_percentiles=(5, 95),
+        h_max=0.01,
+        include_masks=False,
+        ):
+    """
+    Quantify BF/R/G area, overlap area, and G intensity.
+
+    Core outputs:
+    - bf_area
+    - r_area
+    - r_intensity
+    - r_filter
+    - g_area
+    - overlapping_area
+    - overlap_r
+    - overlap_g
+    - g_intensity_all
+    - g_intensity_overlap
+    """
+    bf_params = bf_params or {}
+    r_signal_params = r_signal_params or {}
+    g_signal_params = g_signal_params or {}
+
+    bf_mask, bf_area = brightfield_segmentation(im_bf, **bf_params)
+    r_mask, r_area = signal_segmentation(im_r, **r_signal_params)
+    g_mask, g_area = signal_segmentation(im_g, **g_signal_params)
+
+    r_area_raw = int(r_area)
+    r_area_fraction_raw = safe_divide(r_area_raw, bf_area)
+    r_quant_raw = quantify_signal_mask(im_r, r_mask)
+    r_intensity_raw = r_quant_raw['intensity']
+    r_intensity_sum_raw = r_quant_raw['intensity_sum']
+    r_area_filtered = (
+        (min_r_area is not None and r_area_raw < min_r_area)
+        or (
+            min_r_area_fraction is not None
+            and r_area_fraction_raw < min_r_area_fraction
+        )
+    )
+    if r_area_filtered:
+        r_mask = np.zeros_like(r_mask, dtype=bool)
+        r_area = 0
+
+    r_intensity_filtered = (
+        (
+            min_r_intensity is not None
+            and (
+                pd.isna(r_intensity_raw)
+                or r_intensity_raw < min_r_intensity
+            )
+        )
+        or (
+            min_r_intensity_sum is not None
+            and r_intensity_sum_raw < min_r_intensity_sum
+        )
+    )
+    if r_intensity_filtered:
+        r_mask = np.zeros_like(r_mask, dtype=bool)
+        r_area = 0
+
+    overlap_result = quantify_overlap(r_mask, g_mask, im_g)
+
+    result = {
+        'bf_area': int(bf_area),
+        'r_area': int(r_area),
+        'r_intensity': r_intensity_raw,
+        'r_filter': r_area_filtered or r_intensity_filtered,
+        'g_area': int(g_area),
+        'overlapping_area': overlap_result['overlapping_area'],
+        'overlap_r': overlap_result['signal_in_receptor_fraction'],
+        'overlap_g': overlap_result['receptor_in_signal_fraction'],
+        'g_intensity_all': overlap_result['signal_intensity_all'],
+        'g_intensity_overlap': overlap_result['signal_intensity_overlapping'],
+    }
+
+    if include_cell_stats:
+        result.update(
+            quantify_cell_brightness_stats(
+                im_g,
+                g_mask,
+                h_max=h_max,
+                include_percentiles=include_percentiles,
+                collected_percentiles=collected_percentiles,
+            )
+        )
+
+    if include_masks:
+        result.update({
+            'bf_mask': bf_mask,
+            'r_mask': r_mask,
+            'g_mask': g_mask,
+            'overlap_mask': overlap_result['overlap_mask'],
+        })
+
+    return result
+
+
+def assay_rg_overlap_analysis(
+        df_metadata,
+        image_directory,
+        output_file=None,
+        bf_label='bf',
+        r_label='r',
+        g_label='g',
+        r_channel=0,
+        g_channel=1,
+        bf_channel=None,
+        bf_params=None,
+        r_signal_params=None,
+        g_signal_params=None,
+        min_r_area=0,
+        min_r_area_fraction=None,
+        min_r_intensity=None,
+        min_r_intensity_sum=None,
+        include_cell_stats=False,
+        include_percentiles=False,
+        collected_percentiles=(5, 95),
+        ):
+    """
+    New batch analysis for the BF/R/G overlap workflow.
+
+    Returns one row per experiment with the core requested outputs plus useful
+    percentage columns and processing status.
+    """
+    df_metadata = df_metadata.copy()
+    if 'include' in df_metadata.columns:
+        df_metadata = df_metadata[df_metadata['include'] == 1].copy()
+
+    results = []
+
+    for exp_id in tqdm.tqdm(df_metadata['experiment_id'].unique(), desc="Processing RG overlap"):
         exp_data = df_metadata[df_metadata['experiment_id'] == exp_id]
-        
-        # Find signal (channel 'r') and brightfield (channel 'bf') images
-        bf_row = exp_data[exp_data['channel'] == 'bf']
-        g_row = exp_data[exp_data['channel'] == 'g']
-        r_row = exp_data[exp_data['channel'] == 'r']
-        
-        # Skip if we don't have both signal and brightfield images
-        if len(g_row) == 0 or len(bf_row) == 0:
-            print(f"Warning: Missing images for experiment {exp_id}. Skipping.")
+
+        base = {'experiment_id': exp_id, 'status': 'ok', 'error': ''}
+        metadata_cols = [
+            col for col in exp_data.columns
+            if col not in ['figure_name', 'figure_id', 'channel', 'include', 'notes']
+        ]
+        for col in metadata_cols:
+            base[col] = exp_data.iloc[0][col]
+
+        bf_rows = exp_data[exp_data['channel'] == bf_label]
+        r_rows = exp_data[exp_data['channel'] == r_label]
+        g_rows = exp_data[exp_data['channel'] == g_label]
+
+        if len(bf_rows) == 0 or len(r_rows) == 0 or len(g_rows) == 0:
+            base.update({
+                'status': 'skipped',
+                'error': f"Missing required channel: {bf_label}, {r_label}, or {g_label}",
+            })
+            results.append(base)
             continue
-        
-        # Get image paths
-        g_path = os.path.join(image_directory, g_row.iloc[0]['figure_name'])
-        bf_path = os.path.join(image_directory, bf_row.iloc[0]['figure_name'])
-        r_exists = len(r_row) > 0
-        if r_exists:
-            r_path = os.path.join(image_directory, r_row.iloc[0]['figure_name'])
-        
-        # Check if files exist
-        if not os.path.exists(g_path) or not os.path.exists(bf_path):
-            print(f"Warning: Images for experiment {exp_id} not found. Skipping.")
+
+        bf_path = os.path.join(image_directory, bf_rows.iloc[0]['figure_name'])
+        r_path = os.path.join(image_directory, r_rows.iloc[0]['figure_name'])
+        g_path = os.path.join(image_directory, g_rows.iloc[0]['figure_name'])
+
+        base.update({
+            'bf_file': bf_rows.iloc[0]['figure_name'],
+            'r_file': r_rows.iloc[0]['figure_name'],
+            'g_file': g_rows.iloc[0]['figure_name'],
+        })
+
+        missing_files = [
+            path for path in [bf_path, r_path, g_path]
+            if not os.path.exists(path)
+        ]
+        if missing_files:
+            base.update({
+                'status': 'skipped',
+                'error': f"Missing image file(s): {missing_files}",
+            })
+            results.append(base)
             continue
-        
+
         try:
-            # Perform single analysis
-            df_temp = single_analysis(g_path, bf_path, channel=g_channel)
-            
-            # Add experiment_id
-            df_temp['experiment_id'] = exp_id
-            
-            # Initialization
-            df_temp['Red Area'] = np.nan
-            df_temp['Green Area'] = np.nan
-            df_temp['Overlap Area'] = np.nan
-            df_temp['Green in Red Fraction'] = np.nan
-            df_temp['Green in Red Percent'] = np.nan
-            df_temp['Green Brightness in Red'] = np.nan
-            df_temp['Green Mean Brightness in Red'] = np.nan
-            
-            if os.path.exists(r_path):
-                try:
-                    # If red channel exists, perform overlap quantification
-                    im_g = skimage.img_as_float(skimage.io.imread(g_path)[:,:,g_channel])
-                    im_r = skimage.img_as_float(skimage.io.imread(r_path)[:,:,r_channel])
-                    overlap_result = overlap_quant(im_r, im_g)
-                    for key, value in overlap_result.items():
-                        df_temp[key] = value
-                except Exception as e:
-                    print(f"Warning: red overlap failed for experiment {exp_id}: {str(e)}")
-            
-            else:
-                print(f"Warning: r image file not found for experiment {exp_id}")
-            
-            # Concatenate to results
-            df_results = pd.concat([df_results, df_temp], ignore_index=True)
-            
+            im_bf = read_image_channel(bf_path, channel=bf_channel)
+            im_r = read_image_channel(r_path, channel=r_channel)
+            im_g = read_image_channel(g_path, channel=g_channel)
+
+            quant_result = quantify_bf_rg_overlap(
+                im_bf,
+                im_r,
+                im_g,
+                bf_params=bf_params,
+                r_signal_params=r_signal_params,
+                g_signal_params=g_signal_params,
+                min_r_area=min_r_area,
+                min_r_area_fraction=min_r_area_fraction,
+                min_r_intensity=min_r_intensity,
+                min_r_intensity_sum=min_r_intensity_sum,
+                include_cell_stats=include_cell_stats,
+                include_percentiles=include_percentiles,
+                collected_percentiles=collected_percentiles,
+                include_masks=False,
+            )
+            base.update(quant_result)
+
         except Exception as e:
-            print(f"Error processing experiment {exp_id}: {str(e)}")
-            continue
-    
-    # Save results to CSV
-    df_results.to_csv(output_file, index=False)
-    
+            base.update({'status': 'error', 'error': str(e)})
+
+        results.append(base)
+
+    df_results = pd.DataFrame(results)
+
+    if output_file is not None:
+        df_results.to_csv(output_file, index=False)
+
     return df_results
